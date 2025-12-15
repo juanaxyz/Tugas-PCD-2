@@ -1,228 +1,268 @@
-import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+import math
+from main import apply_kernel
 
 
-def load_image(image_path):
-    """Memuat gambar dan konversi ke grayscale"""
-    img = Image.open(image_path)
-    img_gray = img.convert('L')
-    return np.array(img_gray), np.array(img)
+def rgb_to_grayscale(img_path: str) -> Image:
+    """Convert RGB image to grayscale using standard luminosity formula."""
+    img = Image.open(img_path)
+    px = img.load()
+    canvas = Image.new("L", (img.width, img.height))
+    px_new = canvas.load()
+
+    for y in range(img.height):
+        for x in range(img.width):
+
+            r, g, b = px[x, y]
+            gray = int(0.299 * r + 0.587 * g + 0.114 * b)
+            px_new[x, y] = gray
+
+    # canvas.show()
+    return canvas
 
 
-def apply_gaussian_blur(img, kernel_size=5, sigma=1.0):
-    """Gaussian blur manual untuk mengurangi noise"""
-    height, width = img.shape
-    pad = kernel_size // 2
-    blurred = np.zeros_like(img, dtype=float)
+def load_image(img_path):
+    """Load image and convert to grayscale if needed. Returns (grayscale, color) tuple."""
+    img = Image.open(img_path)
+    img_gray = img.copy()
+    img_color = img.copy()
 
-    # Buat Gaussian kernel
-    kernel = np.zeros((kernel_size, kernel_size))
-    for i in range(kernel_size):
-        for j in range(kernel_size):
-            x = i - pad
-            y = j - pad
-            kernel[i, j] = np.exp(-(x**2 + y**2) / (2 * sigma**2))
-    kernel /= kernel.sum()
+    # Use getpixel to check if image is RGB (tuple) or grayscale (int)
+    if isinstance(img.getpixel((0, 0)), tuple):
+        img_gray = rgb_to_grayscale(img_path)
 
-    # Apply convolution
-    img_padded = np.pad(img, pad, mode='edge')
-    for i in range(height):
-        for j in range(width):
-            region = img_padded[i:i+kernel_size, j:j+kernel_size]
-            blurred[i, j] = np.sum(region * kernel)
-
-    return blurred.astype(np.uint8)
+    return img_gray, img_color
 
 
-def sobel_edge_detection(img):
-    """Deteksi tepi menggunakan operator Sobel manual"""
-    # Sobel kernels
-    sobel_x = np.array([[-1, 0, 1],
-                        [-2, 0, 2],
-                        [-1, 0, 1]])
-
-    sobel_y = np.array([[-1, -2, -1],
-                        [0, 0, 0],
-                        [1, 2, 1]])
-
-    height, width = img.shape
-    gradient_x = np.zeros_like(img, dtype=float)
-    gradient_y = np.zeros_like(img, dtype=float)
-
-    # Padding
-    img_padded = np.pad(img, 1, mode='edge')
-
-    # Konvolusi manual
-    for i in range(height):
-        for j in range(width):
-            region = img_padded[i:i+3, j:j+3]
-            gradient_x[i, j] = np.sum(region * sobel_x)
-            gradient_y[i, j] = np.sum(region * sobel_y)
-
-    # Hitung magnitude
-    magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
-    magnitude = (magnitude / magnitude.max() * 255).astype(np.uint8)
-
-    return magnitude
+kernel_sobel = {
+    "sobel_v": [[-1,  0,  1],
+                [-2,  0,  2],
+                [-1,  0,  1]],
+    "sobel_h": [
+        [-1, -2, -1],
+        [0,  0,  0],
+        [1,  2,  1]
+    ]
+}
 
 
-def threshold_image(img, threshold=50):
-    """Thresholding manual untuk binarisasi"""
-    binary = np.zeros_like(img)
-    binary[img > threshold] = 255
-    return binary
+def sobel_edge_detection(img_gray):
+    """Apply Sobel edge detection to grayscale image."""
+    px = img_gray.load()
+    w, h = img_gray.size
+
+    img_gx = apply_kernel(
+        px, w, h, kernel_sobel["sobel_h"], padding="replicate")
+    img_gy = apply_kernel(
+        px, w, h, kernel_sobel['sobel_v'], padding="replicate"
+    )
+
+    px_h = img_gx.load()
+    px_v = img_gy.load()
+
+    result = Image.new("L", (w, h))
+    px_res = result.load()
+
+    for x in range(w):
+        for y in range(h):
+            gx = px_h[x, y]
+            gy = px_v[x, y]
+
+            magnitude = math.sqrt(gx**2 + gy**2)
+            px_res[x, y] = int(min(255, magnitude))
+
+    return result
+
+
+def threshold_image(img_gray, threshold=50):
+    """Return binary PIL 'L' image with 0/255 values."""
+    w, h = img_gray.size
+    pixels = img_gray.load()
+    out = Image.new("L", (w, h))
+    out_px = out.load()
+    for y in range(h):
+        for x in range(w):
+            out_px[x, y] = 255 if pixels[x, y] > threshold else 0
+    return out
 
 
 def connected_components(binary_img):
-    """Label connected components using an iterative, union-find two-pass algorithm.
-    This implementation is significantly faster and avoids costly python-level
-    recursive equivalence resolution used previously.
-    Returns: (labels, num_components)
+    """Label connected components (4-connectivity) using union-find.
+    Input: PIL 'L' binary image (0/255). Returns (labels, label_count) where labels is
+    a 2D list of ints (H x W) with labels 0..n, and label_count is number of labels.
     """
-    height, width = binary_img.shape
-    # Convert to boolean mask (True==object) for convenience
-    if binary_img.dtype == np.uint8:
-        mask = binary_img > 0
-    else:
-        mask = binary_img.astype(bool)
+    w, h = binary_img.size
+    px = binary_img.load()
 
-    labels = np.zeros((height, width), dtype=np.int32)
+    # mask ke true/false
+    mask = [[px[x, y] != 0 for x in range(w)] for y in range(h)]
 
-    # Union-Find (Disjoint Set) implementation
-    parent = [0]  # index 0 unused; parent[i] = parent label of i
+    labels = [[0 for _ in range(w)] for _ in range(h)]
+
+    parent = [0]
 
     def make_set():
-        label = len(parent)
-        parent.append(label)
-        return label
+        parent.append(len(parent))
+        return len(parent) - 1
 
     def find(x):
-        # path compression
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            nxt = parent[x]
+            parent[x] = root
+            x = nxt
+        return root
 
     def union(a, b):
         ra = find(a)
         rb = find(b)
         if ra == rb:
             return
-        # attach larger root to smaller root to keep roots small
         if ra < rb:
             parent[rb] = ra
         else:
             parent[ra] = rb
 
-    # First pass: assign labels and record unions
-    for i in range(height):
-        for j in range(width):
-            if not mask[i, j]:
+    # First pass
+    for y in range(h):
+        for x in range(w):
+            if not mask[y][x]:
                 continue
             neighbors = []
-            # 4-connectivity: up, left
-            if i > 0 and labels[i - 1, j] > 0:
-                neighbors.append(labels[i - 1, j])
-            if j > 0 and labels[i, j - 1] > 0:
-                neighbors.append(labels[i, j - 1])
+            # up
+            if y > 0 and labels[y - 1][x] > 0:
+                neighbors.append(labels[y - 1][x])
+            # left
+            if x > 0 and labels[y][x - 1] > 0:
+                neighbors.append(labels[y][x - 1])
 
             if not neighbors:
-                new_label = make_set()
-                labels[i, j] = new_label
+                lab = make_set()
+                labels[y][x] = lab
             else:
-                min_label = min(neighbors)
-                labels[i, j] = min_label
-                # union other neighbor labels with min label
+                lab = min(neighbors)
+                labels[y][x] = lab
                 for other in neighbors:
-                    if other != min_label:
-                        union(other, min_label)
+                    if other != lab:
+                        union(other, lab)
 
-    # Second pass: flatten and relabel sequentially
-    # Build mapping from root->new label
-    max_label = len(parent) - 1
-    root_map = np.zeros(max_label + 1, dtype=np.int32)
+    # Second pass
+    root_map = {}
     next_label = 0
 
-    for lab in range(1, max_label + 1):
-        if parent[lab] == 0:
-            continue
-        root = find(lab)
-        if root_map[root] == 0:
-            next_label += 1
-            root_map[root] = next_label
-    # Now map labels array
-    # flatten-labels and remap using find + root_map
-    for i in range(height):
-        for j in range(width):
-            lab = labels[i, j]
-            if lab > 0:
-                root = find(lab)
-                labels[i, j] = root_map[root]
+    for y in range(h):
+        for x in range(w):
+            lab = labels[y][x]
+            if lab == 0:
+                continue
+            root = find(lab)
+            if root not in root_map:
+                next_label += 1
+                root_map[root] = next_label
+            labels[y][x] = root_map[root]
 
     return labels, next_label
 
 
 def filter_by_area(labels, min_area=50, max_area=5000):
-    """Filter komponen berdasarkan area (ukuran)"""
-    # Use numpy bincount for fast area counting
-    flat = labels.flatten()
-    max_label = flat.max()
-    if max_label == 0:
-        return labels, 0
+    """Filter components by area; labels is 2D list; return remapped 2D list of
+    sequential labels and count.
+    """
+    h = len(labels)
+    w = len(labels[0]) if h > 0 else 0
+    counts = {}
+    # count areas
+    for y in range(h):
+        for x in range(w):
+            lab = labels[y][x]
+            if lab == 0:
+                continue
+            # hitung jumlah komponen berdasarkan key label
+            counts[lab] = counts.get(lab, 0) + 1
 
-    counts = np.bincount(flat)
-    filtered_labels = np.zeros_like(labels)
-    # Map old label -> new sequential label
-    label_map = np.zeros(max_label + 1, dtype=np.int32)
+    # tentukan label yang valid berdasarkan area
+    valid_labels = {lab for lab, cnt in counts.items() if min_area <=
+                    cnt <= max_area}
+    new_label_map = {}
     new_label = 0
-    for lab in range(1, max_label + 1):
-        area = counts[lab] if lab < len(counts) else 0
-        if min_area <= area <= max_area:
-            new_label += 1
-            label_map[lab] = new_label
+    filtered = [[0 for _ in range(w)] for _ in range(h)]
 
-    if new_label == 0:
-        return filtered_labels, 0
+    for lab in sorted(valid_labels):
+        new_label += 1
+        new_label_map[lab] = new_label
 
-    # remap labels
-    remapped = label_map[labels]
-    return remapped, new_label
+    for y in range(h):
+        for x in range(w):
+            lab = labels[y][x]
+            if lab in new_label_map:
+                filtered[y][x] = new_label_map[lab]
 
-# Main process
+    return filtered, new_label
 
 
-def count_rice_grains(image_path):
-    """Fungsi utama untuk menghitung butir beras"""
+def labels_to_color_image(labels):
+    """Convert a 2D label list to an RGB PIL image (colors for each label).
+    Label 0 -> black; label n -> color from simple palette.
+    """
+    h = len(labels)
+    w = len(labels[0]) if h > 0 else 0
+    img = Image.new("RGB", (w, h))
+    px = img.load()
+
+    def color_for_label(l):
+        if l == 0:
+            return (0, 0, 0)
+        r = (l * 97) % 256
+        g = (l * 57) % 256
+        b = (l * 37) % 256
+        return (r, g, b)
+
+    for y in range(h):
+        for x in range(w):
+            px[x, y] = color_for_label(labels[y][x])
+    return img
+
+
+def count_rice_grains(
+    image_path,
+    threshold=25,
+    min_area=500,
+    max_area=8000
+):
+    """Main pipeline to count rice grains without gaussian blur.
+    Returns the count and saves result image.
+    """
     print("Memuat gambar...")
     img_gray, img_color = load_image(image_path)
 
-    print("Menerapkan Gaussian blur...")
-    img_blurred = apply_gaussian_blur(img_gray, kernel_size=3, sigma=1.0)
-
-    print("Mendeteksi tepi dengan Sobel...")
-    edges = sobel_edge_detection(img_blurred)
+    print("Deteksi tepi (Sobel)...")
+    edges = sobel_edge_detection(img_gray)
 
     print("Thresholding...")
-    binary = threshold_image(edges, threshold=25)
+    binary = threshold_image(edges, threshold)
 
-    print("Mencari connected components...")
-    # Convert binary to 0/1 mask for the union-find labeling
-    labels, num_components = connected_components(binary)
+    print("Labeling komponen (connected components)...")
+    labels, num = connected_components(binary)
+    print(f"Komponen ditemukan (total labels): {num}")
 
-    print("Filtering berdasarkan ukuran...")
+    print("Filter berdasarkan ukuran area...")
     filtered_labels, rice_count = filter_by_area(
-        labels, min_area=350, max_area=8000)
+        labels, min_area, max_area)
+    print(f"Butir yang valid setelah filter: {rice_count}")
 
-    # Visualisasi
+    # visualization
+    color_labels_img = labels_to_color_image(filtered_labels)
+
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-
     axes[0, 0].imshow(img_color)
     axes[0, 0].set_title('Gambar Original')
     axes[0, 0].axis('off')
 
-    axes[0, 1].imshow(img_blurred, cmap='gray')
-    axes[0, 1].set_title('Setelah Gaussian Blur')
+    axes[0, 1].imshow(img_gray, cmap='gray')
+    axes[0, 1].set_title('Grayscale')
     axes[0, 1].axis('off')
 
     axes[0, 2].imshow(edges, cmap='gray')
@@ -233,14 +273,61 @@ def count_rice_grains(image_path):
     axes[1, 0].set_title('Binary Image (Thresholding)')
     axes[1, 0].axis('off')
 
-    axes[1, 1].imshow(filtered_labels, cmap='nipy_spectral')
+    axes[1, 1].imshow(color_labels_img)
     axes[1, 1].set_title(f'Connected Components\n(Jumlah: {rice_count} butir)')
     axes[1, 1].axis('off')
 
-    # Overlay hasil pada gambar original
+    # overlay original and bounding boxes
     overlay = img_color.copy()
+    overlay_px = overlay.load()
+
+    # find boxes per label
+    boxes = {}
+    h = len(filtered_labels)
+    w = len(filtered_labels[0]) if h > 0 else 0
+    for y in range(h):
+        for x in range(w):
+            lab = filtered_labels[y][x]
+            if lab == 0:
+                continue
+            if lab not in boxes:
+                boxes[lab] = [x, y, x, y]
+            else:
+                L = boxes[lab]
+                if x < L[0]:
+                    L[0] = x
+                if y < L[1]:
+                    L[1] = y
+                if x > L[2]:
+                    L[2] = x
+                if y > L[3]:
+                    L[3] = y
+
+    # draw boxes (green) and centers (red)
+    for lab, box in boxes.items():
+        x1, y1, x2, y2 = box
+        # draw horizontal edges
+        for x in range(x1, x2 + 1):
+            if 0 <= x < w and 0 <= y1 < h:
+                overlay_px[x, y1] = (0, 255, 0)
+            if 0 <= x < w and 0 <= y2 < h:
+                overlay_px[x, y2] = (0, 255, 0)
+        for y in range(y1, y2 + 1):
+            if 0 <= x1 < w and 0 <= y < h:
+                overlay_px[x1, y] = (0, 255, 0)
+            if 0 <= x2 < w and 0 <= y < h:
+                overlay_px[x2, y] = (0, 255, 0)
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                nx = cx + dx
+                ny = cy + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    overlay_px[nx, ny] = (255, 0, 0)
+
     axes[1, 2].imshow(overlay)
-    axes[1, 2].set_title(f'Hasil Deteksi: {rice_count} butir beras')
+    axes[1, 2].set_title(f'Hasil {rice_count} butir')
     axes[1, 2].axis('off')
 
     plt.tight_layout()
@@ -251,18 +338,22 @@ def count_rice_grains(image_path):
     return rice_count
 
 
-# Jalankan program
 if __name__ == "__main__":
-    # Ganti dengan path gambar Anda
-    image_path = "./images/input/beras.jpg"  # atau "beras.png"
+    image_path = "./images/input/beras_2.jpg"
 
     try:
-        jumlah_beras = count_rice_grains(image_path)
+        jumlah_beras = count_rice_grains(
+            image_path,
+            threshold=25,
+            min_area=800,
+            max_area=9000
+        )
+
         print(f"\n{'='*50}")
         print(f"HASIL AKHIR: Terdeteksi {jumlah_beras} butir beras")
         print(f"{'='*50}")
+
     except FileNotFoundError:
         print(f"Error: File '{image_path}' tidak ditemukan!")
-        print("Pastikan gambar berada di direktori yang sama dengan script ini.")
     except Exception as e:
         print(f"Error: {e}")

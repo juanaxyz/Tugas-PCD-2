@@ -1,9 +1,21 @@
 from PIL import Image
 import matplotlib.pyplot as plt
-import numpy as np
+
 
 list_kernels = {
-    # LOW-PASS FILTER (SMOOTHING)
+    # LOW-PASS FILTER (SMOOTHING / BLURRING)
+    # Catatan: Kernel "sharpening 1" dan "sharpening 2" pada dasarnya adalah filter low-pass (smoothing)
+    # kecuali dinormalisasi sebagai filter sharpening high-boost.
+    "smoothing_diamond": [
+        [0, 1, 0],
+        [1, 2, 1],
+        [0, 1, 0]
+    ],
+    "smoothing_8_neighbor": [
+        [1, 1, 1],
+        [1, 2, 1],
+        [1, 1, 1]
+    ],
     "mean": [
         [1, 1, 1],
         [1, 1, 1],
@@ -14,50 +26,97 @@ list_kernels = {
         [2, 4, 2],
         [1, 2, 1]
     ],
+
     # HIGH-PASS FILTER (EDGE DETECTION)
-    "laplacian_1": [
-        [0, -1,  0],
-        [-1,  4, -1],
-        [0, -1,  0]
+    "laplacian_4_neighbor": [
+        [0, -1, 0],
+        [-1, 4, -1],
+        [0, -1, 0]
     ],
-    "laplacian_2": [
+    "laplacian_8_neighbor": [
         [-1, -1, -1],
-        [-1,  8, -1],
+        [-1, 8, -1],
         [-1, -1, -1]
     ],
+    "laplacian_LoG": [
+        [1, -2, 1],
+        [-2, 4, -2],
+        [1, -2, 1]
+    ],
+
+    # Penambahan 1: Operator Prewitt (3x3 Gradient)
+    "prewitt_horizontal": [
+        [-1, 0, 1],
+        [-1, 0, 1],
+        [-1, 0, 1]
+    ],
+    "prewitt_vertical": [
+        [-1, -1, -1],
+        [0, 0, 0],
+        [1, 1, 1]
+    ],
+
+    # Penambahan 2: Operator Robert (2x2 Gradient)
+    "robert_diagonal_x": [
+        [1, 0],
+        [0, -1]
+    ],
+    "robert_diagonal_y": [
+        [0, 1],
+        [-1, 0]
+    ],
+
     "sobel_horizontal": [
         [-1, -2, -1],
-        [0,  0,  0],
-        [1,  2,  1]
+        [0, 0, 0],
+        [1, 2, 1]
     ],
     "sobel_vertical": [
-        [-1,  0,  1],
-        [-2,  0,  2],
-        [-1,  0,  1]
+        [-1, 0, 1],
+        [-2, 0, 2],
+        [-1, 0, 1]
     ],
-    "outline": [
+
+    # HIGH-BOOST FILTER (SHARPENING)
+    "sharpen_high_boost": [
+        [0, -1, 0],
+        [-1, 5, -1],
+        [0, -1, 0]
+    ],
+
+    "high boost filter": [
         [-1, -1, -1],
-        [-1,  8, -1],
+        [-1, 8, -1],
         [-1, -1, -1]
     ],
-    # HIGH-BOOST FILTER (SHARPENING)
-    "sharpen": [
-        [0, -1,  0],
-        [-1,  5, -1],
-        [0, -1,  0]
-    ],
+
     # SPECIAL FILTER: EMBOSS
-    "emboss": [
-        [-2, -1, 0],
-        [-1,  1, 1],
-        [0,  1, 2]
+    "emboss_top_left": [  # (a) Embossing dari arah kiri atas
+        [-4, -4, 0],
+        [-4, 1, 4],
+        [0, 4, 4]
     ],
-    # SPECIAL FILTER: MOTION BLUR
+    "emboss_left": [  # (b) Embossing dari arah kiri
+        [-6, 0, 6],
+        [-6, 1, 6],
+        [-6, 0, 6]
+    ],
+    "emboss_bottom_right": [  # (c) Embossing dari arah kanan bawah
+        [4, 4, 0],
+        [4, 1, -4],
+        [0, -4, -4]
+    ],
+    "emboss_right": [  # (d) Embossing dari arah kanan
+        [6, 0, -6],
+        [6, 1, -6],
+        [6, 0, -6]
+    ],
     "motion_blur_horizontal": [
         [1, 1, 1],
         [0, 0, 0],
         [0, 0, 0]
     ]
+
 }
 
 
@@ -135,15 +194,22 @@ def apply_kernel(px_img, w, h, kernel, padding="zero"):
     px_img: PixelAccess object dari PIL
     """
     # Cek apakah gambar berwarna atau grayscale
-    sample = px_img[0, 0]
-    is_color = isinstance(sample, tuple)
+    is_color = None
+
+    try:
+        sample = px_img[0, 0]
+        is_color = isinstance(sample, tuple)
+    except Exception:
+        is_color = False
 
     k_size = len(kernel)
     offset = k_size // 2
 
     # Hitung sum kernel untuk normalisasi (jika diperlukan)
+    # for row in kernel:
+    #     print(row)
     k_sum = sum(sum(row) for row in kernel)
-
+    # print(f"berwarna = {k_sum}")
     if is_color:
         # Buat gambar output berwarna
         out_img = Image.new("RGB", (w, h))
@@ -519,24 +585,40 @@ def print_menu():
     print("\n" + "="*60)
     print("IMAGE FILTERING PROGRAM".center(60))
     print("="*60)
-    print("\n[KERNEL-BASED FILTERS]")
-    print("1.  Mean (Low-pass)")
-    print("2.  Gaussian (Low-pass)")
-    print("3.  Laplacian 1 (High-pass)")
-    print("4.  Laplacian 2 (High-pass)")
-    print("5.  Sobel Horizontal (Edge Detection)")
-    print("6.  Sobel Vertical (Edge Detection)")
-    print("7.  Outline (Edge Detection)")
-    print("8.  Sharpen (High-boost)")
-    print("9.  Emboss (Special Effect)")
-    print("10. Motion Blur Horizontal")
+    print("\n[LOW-PASS FILTERS (SMOOTHING)]")
+    print("1.  Smoothing (Diamond)")
+    print("2.  Smoothing (8-Neighbor)")
+    print("3.  Mean")
+    print("4.  Gaussian")
+
+    print("\n[HIGH-PASS FILTERS (EDGE DETECTION)]")
+    print("5.  Laplacian (4-Neighbor)")
+    print("6.  Laplacian (8-Neighbor)")
+    print("7.  Laplacian of Gaussian (LoG)")
+    print("8.  Prewitt Horizontal")
+    print("9.  Prewitt Vertical")
+    print("10. Robert Diagonal X")
+    print("11. Robert Diagonal Y")
+    print("12. Sobel Horizontal")
+    print("13. Sobel Vertical")
+
+    print("\n[HIGH-BOOST / SHARPENING]")
+    print("14. Sharpen High Boost")
+    print("15. High Boost Filter")
+
+    print("\n[SPECIAL EFFECTS]")
+    print("16. Emboss (Top Left)")
+    print("17. Emboss (Left)")
+    print("18. Emboss (Bottom Right)")
+    print("19. Emboss (Right)")
+    print("20. Motion Blur Horizontal")
 
     print("\n[NEIGHBOR-BASED FILTERS]")
-    print("11. Filter Mean (4-neighbors)")
-    print("12. Filter Median (4-neighbors)")
-    print("13. Filter Batas (Boundary)")
-    print("14. Filter Batas Min")
-    print("15. Filter Batas Max")
+    print("21. Filter Mean (4-neighbors)")
+    print("22. Filter Median (4-neighbors)")
+    print("23. Filter Batas (Boundary)")
+    print("24. Filter Batas Min")
+    print("25. Filter Batas Max")
 
     print("\n0. Keluar")
     print("="*60)
@@ -568,16 +650,26 @@ def process_filter(img, px, w, h, filter_choice, padding):
     """Memproses gambar dengan filter yang dipilih"""
 
     kernel_filters = {
-        1: ("mean", "Kernel - Mean"),
-        2: ("gaussian", "Kernel - Gaussian"),
-        3: ("laplacian_1", "Kernel - Laplacian 1"),
-        4: ("laplacian_2", "Kernel - Laplacian 2"),
-        5: ("sobel_horizontal", "Kernel - Sobel Horizontal"),
-        6: ("sobel_vertical", "Kernel - Sobel Vertical"),
-        7: ("outline", "Kernel - Outline"),
-        8: ("sharpen", "Kernel - Sharpen"),
-        9: ("emboss", "Kernel - Emboss"),
-        10: ("motion_blur_horizontal", "Kernel - Motion Blur")
+        1: ("smoothing_diamond", "Kernel - Smoothing Diamond"),
+        2: ("smoothing_8_neighbor", "Kernel - Smoothing 8-Neighbor"),
+        3: ("mean", "Kernel - Mean"),
+        4: ("gaussian", "Kernel - Gaussian"),
+        5: ("laplacian_4_neighbor", "Kernel - Laplacian 4-Neighbor"),
+        6: ("laplacian_8_neighbor", "Kernel - Laplacian 8-Neighbor"),
+        7: ("laplacian_LoG", "Kernel - Laplacian LoG"),
+        8: ("prewitt_horizontal", "Kernel - Prewitt Horizontal"),
+        9: ("prewitt_vertical", "Kernel - Prewitt Vertical"),
+        10: ("robert_diagonal_x", "Kernel - Robert Diagonal X"),
+        11: ("robert_diagonal_y", "Kernel - Robert Diagonal Y"),
+        12: ("sobel_horizontal", "Kernel - Sobel Horizontal"),
+        13: ("sobel_vertical", "Kernel - Sobel Vertical"),
+        14: ("sharpen_high_boost", "Kernel - Sharpen High Boost"),
+        15: ("high boost filter", "Kernel - High Boost Filter"),
+        16: ("emboss_top_left", "Kernel - Emboss Top Left"),
+        17: ("emboss_left", "Kernel - Emboss Left"),
+        18: ("emboss_bottom_right", "Kernel - Emboss Bottom Right"),
+        19: ("emboss_right", "Kernel - Emboss Right"),
+        20: ("motion_blur_horizontal", "Kernel - Motion Blur")
     }
 
     if filter_choice in kernel_filters:
@@ -587,27 +679,27 @@ def process_filter(img, px, w, h, filter_choice, padding):
             px, w, h, list_kernels[kernel_name], padding=padding)
         show_images_matplotlib(img, result, display_name)
 
-    elif filter_choice == 11:
+    elif filter_choice == 21:
         print(f"\nMemproses dengan Filter Mean...")
         result = filter_mean(px, w, h, padding=padding)
         show_images_matplotlib(img, result, "Filter - Mean (4-neighbors)")
 
-    elif filter_choice == 12:
+    elif filter_choice == 22:
         print(f"\nMemproses dengan Filter Median...")
         result = filter_median(px, w, h, padding=padding)
         show_images_matplotlib(img, result, "Filter - Median")
 
-    elif filter_choice == 13:
+    elif filter_choice == 23:
         print(f"\nMemproses dengan Filter Batas...")
         result = filter_batas(px, w, h, padding=padding)
         show_images_matplotlib(img, result, "Filter - Batas")
 
-    elif filter_choice == 14:
+    elif filter_choice == 24:
         print(f"\nMemproses dengan Filter Batas Min...")
         result = filter_batas_min(px, w, h, padding=padding)
         show_images_matplotlib(img, result, "Filter - Batas Min")
 
-    elif filter_choice == 15:
+    elif filter_choice == 25:
         print(f"\nMemproses dengan Filter Batas Max...")
         result = filter_batas_max(px, w, h, padding=padding)
         show_images_matplotlib(img, result, "Filter - Batas Max")
@@ -639,7 +731,7 @@ if __name__ == "__main__":
         while True:
             print_menu()
 
-            choice = input("\nPilih filter (0-15): ").strip()
+            choice = input("\nPilih filter (0-25): ").strip()
 
             if choice == "0":
                 print("\nTerima kasih! Program selesai.")
@@ -648,8 +740,8 @@ if __name__ == "__main__":
             try:
                 filter_choice = int(choice)
 
-                if filter_choice < 0 or filter_choice > 15:
-                    print("Pilihan tidak valid! Silakan pilih 0-15.")
+                if filter_choice < 0 or filter_choice > 25:
+                    print("Pilihan tidak valid! Silakan pilih 0-25.")
                     continue
 
                 # Pilih padding
@@ -666,7 +758,7 @@ if __name__ == "__main__":
                     break
 
             except ValueError:
-                print("Input tidak valid! Masukkan angka 0-15.")
+                print("Input tidak valid! Masukkan angka 0-25.")
             except Exception as e:
                 print(f"Error saat memproses: {e}")
 
